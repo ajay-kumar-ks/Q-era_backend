@@ -80,26 +80,47 @@ def _replace_question_placeholders(sql: str) -> str:
     return "".join(result)
 
 
+SERIAL_PK_TABLES = {
+    "users",
+    "questions",
+    "question_options",
+    "exams",
+    "exam_questions",
+    "exam_attempts",
+    "leaderboard",
+    "comments",
+    "notifications",
+    "badges",
+    "pending_approvals",
+}
+
+
+def _extract_insert_table(sql: str) -> str | None:
+    match = re.match(r"^\s*INSERT\s+INTO\s+\"?([A-Za-z_][A-Za-z0-9_]*)\"?", sql, flags=re.I)
+    return match.group(1).lower() if match else None
+
+
 def _translate_postgres_sql(sql: str) -> str:
     if not _is_postgres():
         return sql
 
     original_sql = sql
     sql = re.sub(r"\bINSERT\s+OR\s+IGNORE\s+INTO\b", "INSERT INTO", sql, flags=re.I)
-    if re.search(r"\bINSERT\s+INTO\b", original_sql, flags=re.I) and re.search(r"\bINSERT\s+OR\s+IGNORE\s+INTO\b", original_sql, flags=re.I):
+    if re.search(r"\bINSERT\s+OR\s+IGNORE\s+INTO\b", original_sql, flags=re.I):
         sql = sql.rstrip().rstrip(";")
         if "ON CONFLICT" not in sql.upper():
             sql += " ON CONFLICT DO NOTHING"
 
-    sql = re.sub(r"datetime\('now'\)", "CURRENT_TIMESTAMP::text", sql, flags=re.I)
+    sql = re.sub(r"datetime\(\s*'now'\s*\)", "CURRENT_TIMESTAMP::text", sql, flags=re.I)
     sql = re.sub(r"AUTOINCREMENT", "", sql, flags=re.I)
     return _replace_question_placeholders(sql)
 
 
 class PostgresCursor:
-    def __init__(self, records):
+    def __init__(self, records, lastrowid=None):
         self._records = list(records)
         self._index = 0
+        self.lastrowid = lastrowid
 
     async def fetchone(self):
         if self._index >= len(self._records):
@@ -126,7 +147,14 @@ class PostgresDatabase:
             return PostgresCursor(records)
 
         await self._conn.execute(sql, *params)
-        return PostgresCursor([])
+        lastrowid = None
+        insert_table = _extract_insert_table(sql)
+        if insert_table in SERIAL_PK_TABLES:
+            try:
+                lastrowid = await self._conn.fetchval("SELECT LASTVAL()")
+            except Exception:
+                lastrowid = None
+        return PostgresCursor([], lastrowid=lastrowid)
 
     async def executemany(self, sql: str, seq_of_params):
         sql = _translate_postgres_sql(sql)

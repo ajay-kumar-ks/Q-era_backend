@@ -15,9 +15,9 @@ except ImportError:
 
 DB_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), settings.DB_PATH))
 DATABASE_URL = settings.DATABASE_URL
-SCHEMA_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "database", "schema.sql"))
-SCHEMA_PATH_PG = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "database", "schema_postgres.sql"))
-MIGRATIONS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "database", "migrations"))
+SCHEMA_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "database_files", "schema.sql"))
+SCHEMA_PATH_PG = os.path.abspath(os.path.join(os.path.dirname(__file__), "database_files", "schema_postgres.sql"))
+MIGRATIONS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "database_files", "migrations"))
 
 
 def _is_postgres() -> bool:

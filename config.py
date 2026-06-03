@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     }
 
     SECRET_KEY: str = Field("changeme", env="SECRET_KEY")
-    DB_PATH: str = Field("../database/qera.db", env="DB_PATH")
+    DB_PATH: str = Field("database_files/qera.db", env="DB_PATH")
     DATABASE_URL: str | None = Field(None, env="DATABASE_URL")
     ALLOWED_ORIGINS: Annotated[list[str], NoDecode] = Field(
         default=["http://localhost:5173"],

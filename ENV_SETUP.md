@@ -33,7 +33,7 @@ settings.CLOUDINARY_URL
 - `ALLOWED_ORIGIN` - CORS allowed origins (comma-separated for multiple)
 
 ### Database
-- `DB_PATH` - Path to SQLite database (default: `../database/qera.db`)
+- `DB_PATH` - Path to SQLite database (default: `database_files/qera.db`)
 - `DATABASE_URL` - PostgreSQL connection string (optional, overrides SQLite)
 
 ### Cloudinary (Optional)

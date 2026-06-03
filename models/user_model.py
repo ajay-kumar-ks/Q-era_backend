@@ -364,7 +364,7 @@ async def get_learning_progress(db, user_id: int) -> dict:
         FROM exam_attempts ea
         JOIN exams e ON e.id = ea.exam_id
         WHERE ea.user_id = ? AND ea.status = 'submitted'
-        ORDER BY datetime(ea.submitted_at) DESC, ea.id DESC
+        ORDER BY ea.submitted_at DESC, ea.id DESC
         """,
         (user_id,),
     )
@@ -501,7 +501,7 @@ async def get_learning_progress(db, user_id: int) -> dict:
         LEFT JOIN question_tags qt ON qt.question_id = q.id
         LEFT JOIN tags t ON t.id = qt.tag_id
         WHERE b.user_id = ?
-        GROUP BY q.id
+        GROUP BY q.id, b.created_at
         ORDER BY b.created_at DESC
         LIMIT 6
         """,

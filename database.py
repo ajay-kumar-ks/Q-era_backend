@@ -111,7 +111,14 @@ def _translate_postgres_sql(sql: str) -> str:
         if "ON CONFLICT" not in sql.upper():
             sql += " ON CONFLICT DO NOTHING"
 
+    sql = re.sub(
+        r"datetime\(\s*'now'\s*,\s*'(-?\d+)\s+([a-zA-Z]+)'\s*\)",
+        r"(CURRENT_TIMESTAMP + INTERVAL '\1 \2')::text",
+        sql,
+        flags=re.I
+    )
     sql = re.sub(r"datetime\(\s*'now'\s*\)", "CURRENT_TIMESTAMP::text", sql, flags=re.I)
+    sql = re.sub(r"\bGROUP_CONCAT\((.*?)\)", r"STRING_AGG(\1, ',')", sql, flags=re.I)
     sql = re.sub(r"AUTOINCREMENT", "", sql, flags=re.I)
     return _replace_question_placeholders(sql)
 

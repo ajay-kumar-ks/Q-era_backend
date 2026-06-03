@@ -363,6 +363,30 @@ async def add_like(db, user_id: int, question_id: int) -> Optional[dict]:
     return await get_question_by_id(db, question_id)
 
 
+async def remove_like(db, user_id: int, question_id: int) -> Optional[dict]:
+    question = await get_question_by_id(db, question_id)
+    if question is None:
+        return None
+
+    cursor = await db.execute(
+        "SELECT 1 FROM question_likes WHERE user_id = ? AND question_id = ?",
+        (user_id, question_id),
+    )
+    if not await cursor.fetchone():
+        return question
+
+    await db.execute(
+        "DELETE FROM question_likes WHERE user_id = ? AND question_id = ?",
+        (user_id, question_id),
+    )
+    await db.execute(
+        "UPDATE questions SET likes_count = MAX(likes_count - 1, 0) WHERE id = ?",
+        (question_id,),
+    )
+    await db.commit()
+    return await get_question_by_id(db, question_id)
+
+
 async def toggle_bookmark(db, user_id: int, question_id: int) -> dict:
     cursor = await db.execute(
         "SELECT 1 FROM bookmarks WHERE user_id = ? AND question_id = ?",

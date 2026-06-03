@@ -118,6 +118,13 @@ async def delete_question(db, question_id: int) -> None:
 
 
 async def like_question(db, question_id: int, user_id: int) -> dict[str, Any] | None:
+    cursor = await db.execute(
+        "SELECT 1 FROM question_likes WHERE user_id = ? AND question_id = ?",
+        (user_id, question_id),
+    )
+    existing = await cursor.fetchone()
+    if existing:
+        return await question_model.remove_like(db, user_id, question_id)
     return await question_model.add_like(db, user_id, question_id)
 
 

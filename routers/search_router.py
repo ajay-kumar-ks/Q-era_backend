@@ -22,9 +22,9 @@ async def search_questions(
     request: Request,
     q: str = Query(..., min_length=1, description="Search query"),
     tags: str | None = Query(None, description="Comma-separated tag names"),
-    difficulty: str | None = Query(None, regex="^(easy|medium|hard)$"),
-    type: str | None = Query(None, regex="^(mcq|true_false|short_answer|descriptive)$"),
-    mode: str = Query("keyword", regex="^(keyword|semantic)$"),
+    difficulty: str | None = Query(None, pattern="^(easy|medium|hard)$"),
+    type: str | None = Query(None, pattern="^(mcq|true_false|short_answer|descriptive)$"),
+    mode: str = Query("keyword", pattern="^(keyword|semantic)$"),
     page: int = Query(1, ge=1),
     page_size: int = Query(10, ge=1, le=50),
 ):

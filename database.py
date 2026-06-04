@@ -181,12 +181,60 @@ class PostgresDatabase:
         await self._conn.close()
 
 
+class PostgresPoolDatabase:
+    backend = "postgres"
+
+    def __init__(self, pool):
+        self._pool = pool
+
+    async def execute(self, sql: str, params=None):
+        params = params or ()
+        sql = _translate_postgres_sql(sql)
+        async with self._pool.acquire() as conn:
+            if re.match(r"^\s*(SELECT|WITH|VALUES)\b", sql, flags=re.I):
+                records = await conn.fetch(sql, *params)
+                return PostgresCursor(records)
+
+            await conn.execute(sql, *params)
+            lastrowid = None
+            insert_table = _extract_insert_table(sql)
+            if insert_table in SERIAL_PK_TABLES:
+                try:
+                    lastrowid = await conn.fetchval("SELECT LASTVAL()")
+                except Exception:
+                    lastrowid = None
+            return PostgresCursor([], lastrowid=lastrowid)
+
+    async def executemany(self, sql: str, seq_of_params):
+        sql = _translate_postgres_sql(sql)
+        async with self._pool.acquire() as conn:
+            for params in seq_of_params:
+                await conn.execute(sql, *params)
+        return PostgresCursor([])
+
+    async def executescript(self, script: str):
+        statements = [stmt.strip() for stmt in script.split(";") if stmt.strip()]
+        async with self._pool.acquire() as conn:
+            for statement in statements:
+                sql = _translate_postgres_sql(statement)
+                if re.match(r"^\s*(SELECT|WITH|VALUES)\b", sql, flags=re.I):
+                    await conn.fetch(sql)
+                else:
+                    await conn.execute(sql)
+
+    async def commit(self):
+        return None
+
+    async def close(self):
+        await self._pool.close()
+
+
 async def connect_db():
     if _is_postgres():
         if asyncpg is None:
             raise ImportError("asyncpg is required for PostgreSQL support. Install asyncpg in your environment.")
-        pg_conn = await asyncpg.connect(DATABASE_URL)
-        return PostgresDatabase(pg_conn)
+        pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=10)
+        return PostgresPoolDatabase(pool)
 
     _ensure_database_path()
     return await aiosqlite.connect(DB_PATH)

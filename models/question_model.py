@@ -380,7 +380,7 @@ async def remove_like(db, user_id: int, question_id: int) -> Optional[dict]:
         (user_id, question_id),
     )
     await db.execute(
-        "UPDATE questions SET likes_count = MAX(likes_count - 1, 0) WHERE id = ?",
+        "UPDATE questions SET likes_count = CASE WHEN likes_count - 1 < 0 THEN 0 ELSE likes_count - 1 END WHERE id = ?",
         (question_id,),
     )
     await db.commit()

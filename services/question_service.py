@@ -1,4 +1,5 @@
 from typing import Any
+from fastapi import HTTPException
 
 try:
     from backend.models import question_model, comment_model
@@ -6,6 +7,7 @@ try:
 except ImportError:
     from models import question_model, comment_model
     from services import ai_service, notification_service, achievement_service
+from fastapi import HTTPException
 
 
 async def create_question(
@@ -51,6 +53,9 @@ async def create_question(
         options=options,
         requires_approval=requires_approval,
     )
+
+    if question is None:
+        raise HTTPException(status_code=500, detail="Failed to create question.")
 
     if question['is_public'] and not question.get('requires_approval', False):
         await notify_new_question(db, question)

@@ -1,14 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 try:
-    from backend.schemas.exam_schema import ExamCreate, ExamOut, ExamUpdate, AttemptStart, AttemptSave, AttemptSubmit, ResultOut
+    from backend.schemas.exam_schema import ExamCreate, ExamOut, ExamUpdate, AttemptStart, AttemptSave, AttemptSubmit, ResultOut, UpcomingExamOut
     from backend.services.exam_service import start_exam_attempt, submit_exam_attempt, save_exam_attempt_progress, notify_new_exam
     from backend.services import leaderboard_service, exam_generator
     from backend.models import exam_model
     from backend.middlewares.auth import get_current_user, get_current_user_optional
     from backend.middlewares.role import require_admin
 except ImportError:
-    from schemas.exam_schema import ExamCreate, ExamOut, ExamUpdate, AttemptStart, AttemptSave, AttemptSubmit, ResultOut
+    from schemas.exam_schema import ExamCreate, ExamOut, ExamUpdate, AttemptStart, AttemptSave, AttemptSubmit, ResultOut, UpcomingExamOut
     from services.exam_service import start_exam_attempt, submit_exam_attempt, save_exam_attempt_progress, notify_new_exam
     from services import leaderboard_service, exam_generator
     from models import exam_model
@@ -22,6 +22,14 @@ router = APIRouter(prefix="/api/v1/exams", tags=["exams"])
 async def read_exams(request: Request, page: int = 1, limit: int = 20):
     db = request.app.state.db
     return await exam_model.list_exams(db, page=page, limit=limit)
+
+
+@router.get("/upcoming", response_model=list[UpcomingExamOut])
+async def read_upcoming_exams(request: Request, page: int = 1, limit: int = 20):
+    """Get upcoming scheduled exams with dates and deadlines."""
+    db = request.app.state.db
+    offset = (page - 1) * limit
+    return await exam_model.get_upcoming_exams(db, limit=limit, offset=offset)
 
 
 @router.get("/export")
@@ -82,9 +90,12 @@ async def read_latest_attempt(request: Request, exam_id: int, current_user: dict
 @router.patch("/attempt/{attempt_id}", response_model=AttemptStart)
 async def save_attempt(request: Request, attempt_id: int, payload: AttemptSave, current_user: dict = Depends(get_current_user)):
     db = request.app.state.db
-    attempt = await save_exam_attempt_progress(db, attempt_id, current_user["id"],
-        {str(k): str(v) for k, v in payload.answers.items()},
+    attempt = await save_exam_attempt_progress(
+        db,
+        attempt_id,
+        current_user["id"],
         payload.time_taken_seconds,
+        {str(k): str(v) for k, v in payload.answers.items()},
     )
     if attempt is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attempt not found or cannot be saved")
@@ -93,6 +104,27 @@ async def save_attempt(request: Request, attempt_id: int, payload: AttemptSave, 
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Exam not found")
     attempt["questions"] = attempt.get("question_order") or exam["questions"]
     return attempt
+
+
+@router.patch("/{exam_id}/schedule", response_model=ExamOut)
+async def schedule_exam(request: Request, exam_id: int, payload: dict, current_user: dict = Depends(get_current_user)):
+    """Schedule an exam with a specific date and deadline (admin or exam creator only)."""
+    db = request.app.state.db
+    exam = await exam_model.get_exam_by_id(db, exam_id)
+    if exam is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Exam not found")
+    if current_user["role"] != "admin" and exam["user_id"] != current_user["id"]:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to schedule this exam")
+    
+    updated = await exam_model.update_exam(
+        db,
+        exam_id,
+        scheduled_at=payload.get("scheduled_at"),
+        deadline=payload.get("deadline"),
+    )
+    if updated is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Exam not found")
+    return updated
 
 
 @router.post("/", response_model=ExamOut, status_code=status.HTTP_201_CREATED)
@@ -111,6 +143,8 @@ async def create_exam(request: Request, payload: ExamCreate, current_user: dict 
         secure_mode=payload.secure_mode,
         questions=[question.model_dump() for question in payload.questions],
         requires_approval=current_user["role"] != "admin",
+        scheduled_at=payload.scheduled_at,
+        deadline=payload.deadline,
     )
     if not exam.get("requires_approval", False):
         await notify_new_exam(db, exam)
@@ -137,6 +171,8 @@ async def update_exam(request: Request, exam_id: int, payload: ExamUpdate, curre
         randomize_options=payload.randomize_options,
         secure_mode=payload.secure_mode,
         questions=[question.model_dump() for question in payload.questions] if payload.questions is not None else None,
+        scheduled_at=payload.scheduled_at,
+        deadline=payload.deadline,
     )
     if updated is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Exam not found")

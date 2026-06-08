@@ -6,30 +6,54 @@ def _row_to_exam(row) -> Optional[dict]:
     if row is None:
         return None
 
-    if len(row) > 13:
-        # full query with approval status
+    if len(row) > 15:
+        # full query with approval and scheduling
         requires_approval = bool(row[10])
         approval_status = row[13] if row[13] is not None else ("pending" if requires_approval else "approved")
         created_at = row[11]
         updated_at = row[12]
+        scheduled_at = row[14]
+        deadline = row[15]
+    elif len(row) == 15:
+        # query with scheduling fields
+        requires_approval = bool(row[10])
+        approval_status = "pending" if requires_approval else "approved"
+        created_at = row[11]
+        updated_at = row[12]
+        scheduled_at = row[13]
+        deadline = row[14]
+    elif len(row) > 13:
+        # full query with approval status but no scheduling
+        requires_approval = bool(row[10])
+        approval_status = row[13] if row[13] is not None else ("pending" if requires_approval else "approved")
+        created_at = row[11]
+        updated_at = row[12]
+        scheduled_at = None
+        deadline = None
     elif len(row) == 13:
         # query with requires_approval but no status column
         requires_approval = bool(row[10])
         approval_status = "pending" if requires_approval else "approved"
         created_at = row[11]
         updated_at = row[12]
+        scheduled_at = None
+        deadline = None
     elif len(row) == 12:
         # legacy query without approval columns
         requires_approval = False
         approval_status = "approved"
         created_at = row[10]
         updated_at = row[11]
+        scheduled_at = None
+        deadline = None
     else:
         # older legacy query shape
         requires_approval = False
         approval_status = "approved"
         created_at = row[8] if len(row) > 8 else None
         updated_at = row[9] if len(row) > 9 else None
+        scheduled_at = None
+        deadline = None
 
     return {
         "id": row[0],
@@ -44,6 +68,8 @@ def _row_to_exam(row) -> Optional[dict]:
         "secure_mode": bool(row[9]) if len(row) > 9 else False,
         "requires_approval": requires_approval,
         "approval_status": approval_status,
+        "scheduled_at": scheduled_at,
+        "deadline": deadline,
         "created_at": created_at,
         "updated_at": updated_at,
     }
@@ -87,11 +113,13 @@ async def create_exam(
     secure_mode: bool,
     questions: list[dict[str, Any]],
     requires_approval: bool = False,
+    scheduled_at: str | None = None,
+    deadline: str | None = None,
 ) -> dict:
     # Try to insert the new column; fall back to legacy INSERT if missing.
     try:
         cursor = await db.execute(
-            "INSERT INTO exams (user_id, title, description, duration_minutes, total_marks, is_public, randomize_order, randomize_options, secure_mode, requires_approval) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO exams (user_id, title, description, duration_minutes, total_marks, is_public, randomize_order, randomize_options, secure_mode, requires_approval, scheduled_at, deadline) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 user_id,
                 title,
@@ -103,23 +131,42 @@ async def create_exam(
                 int(randomize_options),
                 int(secure_mode),
                 int(requires_approval),
+                scheduled_at,
+                deadline,
             ),
         )
     except Exception:
-        cursor = await db.execute(
-            "INSERT INTO exams (user_id, title, description, duration_minutes, total_marks, is_public, randomize_order, randomize_options, secure_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                user_id,
-                title,
-                description,
-                duration_minutes,
-                total_marks,
-                int(is_public),
-                int(randomize_order),
-                int(randomize_options),
-                int(secure_mode),
-            ),
-        )
+        try:
+            cursor = await db.execute(
+                "INSERT INTO exams (user_id, title, description, duration_minutes, total_marks, is_public, randomize_order, randomize_options, secure_mode, requires_approval) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    user_id,
+                    title,
+                    description,
+                    duration_minutes,
+                    total_marks,
+                    int(is_public),
+                    int(randomize_order),
+                    int(randomize_options),
+                    int(secure_mode),
+                    int(requires_approval),
+                ),
+            )
+        except Exception:
+            cursor = await db.execute(
+                "INSERT INTO exams (user_id, title, description, duration_minutes, total_marks, is_public, randomize_order, randomize_options, secure_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    user_id,
+                    title,
+                    description,
+                    duration_minutes,
+                    total_marks,
+                    int(is_public),
+                    int(randomize_order),
+                    int(randomize_options),
+                    int(secure_mode),
+                ),
+            )
     exam_id = cursor.lastrowid
     await db.commit()
 
@@ -222,6 +269,8 @@ async def update_exam(
     randomize_options: bool | None = None,
     secure_mode: bool | None = None,
     questions: list[dict[str, Any]] | None = None,
+    scheduled_at: str | None = None,
+    deadline: str | None = None,
 ) -> Optional[dict]:
     current = await get_exam_by_id(db, exam_id)
     if current is None:
@@ -252,6 +301,12 @@ async def update_exam(
     if secure_mode is not None:
         fields.append("secure_mode = ?")
         values.append(int(secure_mode))
+    if scheduled_at is not None:
+        fields.append("scheduled_at = ?")
+        values.append(scheduled_at)
+    if deadline is not None:
+        fields.append("deadline = ?")
+        values.append(deadline)
     if fields:
         values.append(exam_id)
         await db.execute(f"UPDATE exams SET {', '.join(fields)}, updated_at = datetime('now') WHERE id = ?", tuple(values))
@@ -371,3 +426,23 @@ async def submit_attempt(db, attempt_id: int, user_id: int, score: int, time_tak
     )
     await db.commit()
     return await get_attempt(db, attempt_id)
+
+
+async def get_upcoming_exams(db, limit: int = 50, offset: int = 0) -> list[dict]:
+    try:
+        cursor = await db.execute(
+            """
+            SELECT id, user_id, title, description, duration_minutes, total_marks, is_public,
+                   randomize_order, randomize_options, secure_mode, scheduled_at, deadline, created_at, updated_at
+            FROM exams
+            WHERE is_public = 1 AND scheduled_at IS NOT NULL AND scheduled_at > datetime('now')
+            ORDER BY scheduled_at ASC
+            LIMIT ? OFFSET ?
+            """,
+            (limit, offset),
+        )
+        rows = await cursor.fetchall()
+        return [_row_to_exam(row) for row in rows if row]
+    except Exception:
+        # fallback if scheduled_at column doesn't exist
+        return []

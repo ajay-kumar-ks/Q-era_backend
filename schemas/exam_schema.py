@@ -18,6 +18,8 @@ class ExamCreate(BaseModel):
     randomize_order: Optional[bool] = False
     randomize_options: Optional[bool] = False
     secure_mode: Optional[bool] = False
+    scheduled_at: Optional[str] = None
+    deadline: Optional[str] = None
     questions: List[ExamQuestionCreate] = Field(..., min_items=1)
 
 
@@ -30,6 +32,8 @@ class ExamUpdate(BaseModel):
     randomize_order: Optional[bool] = None
     randomize_options: Optional[bool] = None
     secure_mode: Optional[bool] = None
+    scheduled_at: Optional[str] = None
+    deadline: Optional[str] = None
     questions: Optional[List[ExamQuestionCreate]] = None
 
 
@@ -53,6 +57,8 @@ class ExamOut(BaseModel):
     randomize_order: bool
     randomize_options: bool
     secure_mode: bool
+    scheduled_at: Optional[str] = None
+    deadline: Optional[str] = None
     questions: List[ExamQuestionOut] = []
     created_at: str
     updated_at: str
@@ -93,3 +99,17 @@ class ResultOut(BaseModel):
     answers: Dict[str, str]
     questions: List[ExamQuestionOut] = []
     submitted_at: str
+
+
+class UpcomingExamOut(BaseModel):
+    id: int
+    title: str
+    description: Optional[str] = None
+    user_id: int
+    duration_minutes: int
+    total_marks: int
+    scheduled_at: Optional[str] = None
+    deadline: Optional[str] = None
+    is_public: bool
+    secure_mode: bool
+

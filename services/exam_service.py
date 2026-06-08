@@ -5,10 +5,10 @@ from typing import Any, Dict
 from fastapi import HTTPException, status
 
 try:
-    from backend.models import exam_model
+    from backend.models import exam_model, review_schedule_model
     from backend.services import leaderboard_service, notification_service, achievement_service
 except ImportError:
-    from models import exam_model
+    from models import exam_model, review_schedule_model
     from services import leaderboard_service, notification_service, achievement_service
 
 
@@ -100,6 +100,21 @@ async def submit_exam_attempt(db, attempt_id: int, user_id: int, time_taken_seco
 
     scoring = await score_exam(db, exam["id"], answers)
     attempt = await exam_model.submit_attempt(db, attempt_id, user_id, scoring["score"], time_taken_seconds, answers)
+
+    # Schedule reviews for incorrect answers (spaced repetition)
+    try:
+        for item in scoring["breakdown"]:
+            if item["earned"] == 0:  # Incorrect answer
+                await review_schedule_model.create_or_update_review_schedule(
+                    db,
+                    user_id=user_id,
+                    question_id=item["question_id"],
+                    source_attempt_id=attempt["id"],
+                )
+    except Exception as e:
+        # Log error but don't block exam submission
+        print(f"Error scheduling review: {e}")
+        pass
 
     if attempt["attempt_number"] == 1:
         await leaderboard_service.insert_leaderboard_entry(

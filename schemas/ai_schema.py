@@ -161,3 +161,41 @@ class ExplainResponse(BaseModel):
     key_concept: str | None = None
     suggestion: str | None = None
 
+
+
+# ---------------------------------------------------------------------------
+# Phase 4.1 — AI Tutor Chat
+# ---------------------------------------------------------------------------
+
+class ChatContext(BaseModel):
+    current_topic: str | None = None
+    recent_question_ids: list[int] = []
+
+
+class ChatRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=2000)
+    conversation_id: int | None = None       # None = start new conversation
+    context: ChatContext | None = None
+
+
+class ChatMessageOut(BaseModel):
+    id: int
+    role: str                                 # "user" | "assistant"
+    content: str
+    created_at: str
+
+
+class ChatResponse(BaseModel):
+    conversation_id: int
+    reply: str
+    follow_up_suggestions: list[str] = []
+    messages: list[ChatMessageOut] = []       # last N messages in the thread
+
+
+class ConversationOut(BaseModel):
+    id: int
+    title: str
+    context_topic: str | None = None
+    created_at: str
+    updated_at: str
+    last_message: str | None = None

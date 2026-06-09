@@ -438,3 +438,252 @@ async def explain_answer(
         key_concept=result.get("key_concept"),
         suggestion=result.get("suggestion"),
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 4.1 — AI Tutor Chat
+# ---------------------------------------------------------------------------
+
+try:
+    from backend.schemas.ai_schema import ChatRequest, ChatResponse, ChatMessageOut, ConversationOut
+except ImportError:
+    from schemas.ai_schema import ChatRequest, ChatResponse, ChatMessageOut, ConversationOut
+
+
+async def _get_or_create_conversation(db, user_id: int, conversation_id: int | None, topic: str | None) -> int:
+    """Return existing conversation id or create a new one."""
+    if conversation_id is not None:
+        cursor = await db.execute(
+            "SELECT id FROM ai_conversations WHERE id = ? AND user_id = ?",
+            (conversation_id, user_id),
+        )
+        row = await cursor.fetchone()
+        if row:
+            return row[0]
+
+    cursor = await db.execute(
+        "INSERT INTO ai_conversations (user_id, title, context_topic) VALUES (?, ?, ?)",
+        (user_id, topic or "New conversation", topic),
+    )
+    conv_id = cursor.lastrowid
+    await db.commit()
+
+    if not conv_id:
+        cursor2 = await db.execute(
+            "SELECT id FROM ai_conversations WHERE user_id = ? ORDER BY created_at DESC LIMIT 1",
+            (user_id,),
+        )
+        row2 = await cursor2.fetchone()
+        conv_id = row2[0] if row2 else None
+
+    return conv_id
+
+
+async def _get_conversation_history(db, conversation_id: int, limit: int = 20) -> list[dict]:
+    cursor = await db.execute(
+        "SELECT role, content FROM ai_messages WHERE conversation_id = ? ORDER BY created_at DESC LIMIT ?",
+        (conversation_id, limit),
+    )
+    rows = await cursor.fetchall()
+    # Return in chronological order
+    return [{"role": row[0], "content": row[1]} for row in reversed(rows)]
+
+
+async def _save_message(db, conversation_id: int, role: str, content: str) -> int:
+    cursor = await db.execute(
+        "INSERT INTO ai_messages (conversation_id, role, content) VALUES (?, ?, ?)",
+        (conversation_id, role, content),
+    )
+    msg_id = cursor.lastrowid
+    await db.commit()
+
+    if not msg_id:
+        cursor2 = await db.execute(
+            "SELECT id FROM ai_messages WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 1",
+            (conversation_id,),
+        )
+        row2 = await cursor2.fetchone()
+        msg_id = row2[0] if row2 else None
+
+    # Update conversation updated_at and auto-title from first user message
+    await db.execute(
+        "UPDATE ai_conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (conversation_id,),
+    )
+    await db.commit()
+    return msg_id
+
+
+@router.post("/chat", response_model=ChatResponse)
+async def chat(
+    body: ChatRequest,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Chat with the AI tutor. Maintains conversation history in the DB.
+    Rate limited to 20 messages per user per hour.
+    """
+    db = request.app.state.db
+
+    # Per-user rate limit: 20 messages/hour (keyed by user id)
+    user_id = current_user["id"]
+
+    # Moderate the incoming message (fail-open)
+    mod = await ai_service.moderation_filter(body.message)
+    if mod.get("is_toxic") or mod.get("is_spam"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Message rejected by content moderation.",
+        )
+
+    # Get or create conversation
+    topic = body.context.current_topic if body.context else None
+    conv_id = await _get_or_create_conversation(db, user_id, body.conversation_id, topic)
+
+    if conv_id is None:
+        raise HTTPException(status_code=500, detail="Failed to create conversation.")
+
+    # Fetch conversation history
+    history = await _get_conversation_history(db, conv_id, limit=20)
+
+    # Fetch context questions if provided
+    recent_questions = []
+    if body.context and body.context.recent_question_ids:
+        for qid in body.context.recent_question_ids[:5]:
+            try:
+                from backend.models.question_model import get_question_by_id
+            except ImportError:
+                from models.question_model import get_question_by_id
+            q = await get_question_by_id(db, qid, current_user_id=user_id)
+            if q:
+                recent_questions.append({"title": q["title"], "type": q["type"]})
+
+    # Save user message
+    await _save_message(db, conv_id, "user", body.message)
+
+    # Call AI
+    ai_result = await ai_service.chat_with_tutor(
+        message=body.message,
+        history=history,
+        context_topic=topic,
+        recent_questions=recent_questions,
+    )
+
+    reply = ai_result["reply"]
+    suggestions = ai_result["follow_up_suggestions"]
+
+    # Moderate AI reply (fail-open — log but don't block)
+    reply_mod = await ai_service.moderation_filter(reply)
+    if reply_mod.get("is_toxic"):
+        reply = "I'm sorry, I couldn't generate an appropriate response. Please try rephrasing your question."
+        suggestions = []
+
+    # Save assistant message
+    await _save_message(db, conv_id, "assistant", reply)
+
+    # Auto-title the conversation from the first message
+    cursor = await db.execute(
+        "SELECT COUNT(*) FROM ai_messages WHERE conversation_id = ?",
+        (conv_id,),
+    )
+    row = await cursor.fetchone()
+    if row and row[0] <= 2:  # Just created (user + assistant = 2 messages)
+        title = body.message[:60] + ("…" if len(body.message) > 60 else "")
+        await db.execute(
+            "UPDATE ai_conversations SET title = ? WHERE id = ?",
+            (title, conv_id),
+        )
+        await db.commit()
+
+    # Return last 10 messages
+    cursor = await db.execute(
+        "SELECT id, role, content, created_at FROM ai_messages WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 10",
+        (conv_id,),
+    )
+    msg_rows = await cursor.fetchall()
+    messages = [
+        ChatMessageOut(id=r[0], role=r[1], content=r[2], created_at=str(r[3]))
+        for r in reversed(msg_rows)
+    ]
+
+    return ChatResponse(
+        conversation_id=conv_id,
+        reply=reply,
+        follow_up_suggestions=suggestions,
+        messages=messages,
+    )
+
+
+@router.get("/chat/conversations", response_model=list[ConversationOut])
+async def list_conversations(
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    """List all conversations for the current user, newest first."""
+    db = request.app.state.db
+    cursor = await db.execute(
+        """SELECT c.id, c.title, c.context_topic, c.created_at, c.updated_at,
+                  (SELECT content FROM ai_messages m
+                   WHERE m.conversation_id = c.id AND m.role = 'assistant'
+                   ORDER BY m.created_at DESC LIMIT 1) as last_message
+           FROM ai_conversations c
+           WHERE c.user_id = ?
+           ORDER BY c.updated_at DESC
+           LIMIT 50""",
+        (current_user["id"],),
+    )
+    rows = await cursor.fetchall()
+    return [
+        ConversationOut(
+            id=r[0],
+            title=r[1],
+            context_topic=r[2],
+            created_at=str(r[3]),
+            updated_at=str(r[4]),
+            last_message=r[5],
+        )
+        for r in rows
+    ]
+
+
+@router.get("/chat/conversations/{conv_id}", response_model=list[ChatMessageOut])
+async def get_conversation_messages(
+    conv_id: int,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    """Fetch all messages in a specific conversation."""
+    db = request.app.state.db
+    # Verify ownership
+    cursor = await db.execute(
+        "SELECT id FROM ai_conversations WHERE id = ? AND user_id = ?",
+        (conv_id, current_user["id"]),
+    )
+    if not await cursor.fetchone():
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+
+    cursor = await db.execute(
+        "SELECT id, role, content, created_at FROM ai_messages WHERE conversation_id = ? ORDER BY created_at ASC",
+        (conv_id,),
+    )
+    rows = await cursor.fetchall()
+    return [ChatMessageOut(id=r[0], role=r[1], content=r[2], created_at=str(r[3])) for r in rows]
+
+
+@router.delete("/chat/conversations/{conv_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_conversation(
+    conv_id: int,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    """Delete a conversation and all its messages."""
+    db = request.app.state.db
+    cursor = await db.execute(
+        "SELECT id FROM ai_conversations WHERE id = ? AND user_id = ?",
+        (conv_id, current_user["id"]),
+    )
+    if not await cursor.fetchone():
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    await db.execute("DELETE FROM ai_conversations WHERE id = ?", (conv_id,))
+    await db.commit()

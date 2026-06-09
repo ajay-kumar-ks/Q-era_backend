@@ -93,6 +93,8 @@ SERIAL_PK_TABLES = {
     "badges",
     "pending_approvals",
     "tags",
+    "ai_conversations",
+    "ai_messages",
 }
 
 

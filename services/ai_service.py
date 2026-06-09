@@ -782,3 +782,144 @@ Return ONLY this JSON, no markdown, no extra text:
         "key_concept": None,
         "suggestion": None,
     }
+
+
+# ---------------------------------------------------------------------------
+# Phase 4.1 — AI Tutor Chat
+# ---------------------------------------------------------------------------
+
+async def chat_with_tutor(
+    message: str,
+    history: list[dict],          # [{"role": "user"|"assistant", "content": str}, ...]
+    context_topic: str | None,
+    recent_questions: list[dict],  # [{"title": str, "type": str}, ...]
+) -> dict:
+    """
+    Send a message to the AI tutor with conversation history.
+
+    Returns dict: reply (str), follow_up_suggestions (list[str])
+    Falls back to a polite error message if AI is unavailable.
+    """
+    # Build context section
+    ctx_parts = []
+    if context_topic:
+        ctx_parts.append(f"The student is currently studying: {context_topic}.")
+    if recent_questions:
+        q_list = ", ".join(f'"{q["title"]}"' for q in recent_questions[:5])
+        ctx_parts.append(f"Recent questions they worked on: {q_list}.")
+    context_str = " ".join(ctx_parts) if ctx_parts else ""
+
+    # Build conversation history for the prompt (last 10 turns max)
+    history_str = ""
+    if history:
+        turns = history[-10:]
+        lines = []
+        for turn in turns:
+            role_label = "Student" if turn["role"] == "user" else "Tutor"
+            lines.append(f"{role_label}: {turn['content']}")
+        history_str = "\n".join(lines)
+
+    prompt = f"""You are QERA Tutor, a friendly and knowledgeable AI tutor for an educational platform.
+Your job is to help students understand concepts, answer questions, and guide their learning.
+
+Guidelines:
+- Be concise but thorough. Aim for 2–4 paragraphs max unless a longer answer is truly needed.
+- Use simple examples to explain complex ideas.
+- Encourage the student and stay positive.
+- If you don't know something, say so honestly.
+- Stay focused on educational topics.
+{f"Context: {context_str}" if context_str else ""}
+
+{"Previous conversation:" + chr(10) + history_str + chr(10) if history_str else ""}Student: {message}
+
+Respond as the Tutor. Then on a NEW LINE after your response, provide exactly 2–3 follow-up suggestions the student might want to explore, as a JSON array of short strings.
+
+Format your response EXACTLY like this:
+<REPLY>
+Your tutor response here.
+</REPLY>
+<SUGGESTIONS>
+["suggestion 1", "suggestion 2", "suggestion 3"]
+</SUGGESTIONS>"""
+
+    result_raw = await _call_model_async(prompt)
+
+    # _call_model_async expects JSON but this prompt returns structured text.
+    # Use a raw text call instead.
+    loop = asyncio.get_event_loop()
+
+    def _call_chat():
+        manager = get_api_key_manager()
+        all_keys = manager.active_keys
+        if not all_keys:
+            return None
+
+        chat_config = {
+            "temperature": 0.8,
+            "top_p": 0.95,
+            "top_k": 40,
+            "max_output_tokens": 2048,
+        }
+
+        for model_name in MODEL_CANDIDATES:
+            for key in all_keys:
+                for attempt in range(2):
+                    try:
+                        genai.configure(api_key=key)
+                        model = genai.GenerativeModel(
+                            model_name=model_name,
+                            safety_settings=SAFETY_SETTINGS,
+                            generation_config=chat_config,
+                        )
+                        response = model.generate_content(prompt)
+                        if not response.candidates:
+                            break
+                        manager.mark_succeeded(key)
+                        return response.text or ""
+                    except google_exceptions.ResourceExhausted:
+                        manager.mark_failed(key)
+                        break
+                    except google_exceptions.PermissionDenied:
+                        manager.mark_failed(key)
+                        break
+                    except Exception as exc:
+                        logger.warning("Chat error (%s): %s", model_name, str(exc)[:80])
+                        if attempt == 0:
+                            continue
+                        break
+        return None
+
+    raw_text = await loop.run_in_executor(None, _call_chat)
+
+    if not raw_text:
+        return {
+            "reply": "I'm sorry, the AI tutor is currently unavailable. Please try again in a moment.",
+            "follow_up_suggestions": [],
+        }
+
+    # Parse <REPLY> and <SUGGESTIONS> blocks
+    reply = ""
+    suggestions = []
+
+    import re as _re
+    reply_match = _re.search(r"<REPLY>(.*?)</REPLY>", raw_text, _re.DOTALL)
+    if reply_match:
+        reply = reply_match.group(1).strip()
+    else:
+        # Fallback: treat entire response as reply
+        reply = raw_text.strip()
+
+    suggestions_match = _re.search(r"<SUGGESTIONS>\s*(\[.*?\])\s*</SUGGESTIONS>", raw_text, _re.DOTALL)
+    if suggestions_match:
+        try:
+            suggestions = json.loads(suggestions_match.group(1))
+            if not isinstance(suggestions, list):
+                suggestions = []
+            suggestions = [str(s) for s in suggestions[:3]]
+        except (json.JSONDecodeError, ValueError):
+            suggestions = []
+
+    return {
+        "reply": reply or "I couldn't formulate a response. Please try rephrasing your question.",
+        "follow_up_suggestions": suggestions,
+    }

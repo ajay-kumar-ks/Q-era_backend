@@ -1,7 +1,7 @@
 ﻿"""
 AI service â€” Google Gemini integration with dynamic API-key rotation.
 
-Uses google-generativeai SDK to call Gemini models for:
+Uses google-genai SDK to call Gemini models for:
 - Duplicate question detection
 - Tag suggestion
 - Difficulty analysis
@@ -17,9 +17,9 @@ import logging
 import re
 from typing import Any
 
-import google.generativeai as genai
-from google.generativeai.types import HarmCategory, HarmBlockThreshold
-from google.api_core import exceptions as google_exceptions
+from google import genai
+from google.genai import types as genai_types
+
 
 try:
     from backend.config import get_api_key_manager
@@ -38,10 +38,22 @@ MODEL_NAME = MODEL_CANDIDATES[0]
 
 # Safety settings â€” block high-severity harm, allow everything else
 SAFETY_SETTINGS = [
-    {"category": HarmCategory.HARM_CATEGORY_HARASSMENT, "threshold": HarmBlockThreshold.BLOCK_ONLY_HIGH},
-    {"category": HarmCategory.HARM_CATEGORY_HATE_SPEECH, "threshold": HarmBlockThreshold.BLOCK_ONLY_HIGH},
-    {"category": HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, "threshold": HarmBlockThreshold.BLOCK_ONLY_HIGH},
-    {"category": HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, "threshold": HarmBlockThreshold.BLOCK_ONLY_HIGH},
+    genai_types.SafetySetting(
+        category=genai_types.HarmCategory.HARM_CATEGORY_HARASSMENT,
+        threshold=genai_types.HarmBlockThreshold.BLOCK_ONLY_HIGH,
+    ),
+    genai_types.SafetySetting(
+        category=genai_types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+        threshold=genai_types.HarmBlockThreshold.BLOCK_ONLY_HIGH,
+    ),
+    genai_types.SafetySetting(
+        category=genai_types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+        threshold=genai_types.HarmBlockThreshold.BLOCK_ONLY_HIGH,
+    ),
+    genai_types.SafetySetting(
+        category=genai_types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+        threshold=genai_types.HarmBlockThreshold.BLOCK_ONLY_HIGH,
+    ),
 ]
 
 GENERATION_CONFIG = {
@@ -54,42 +66,35 @@ GENERATION_CONFIG = {
 
 def _call_model(prompt: str, generation_config: dict | None = None) -> dict[str, Any] | None:
     """
-    Call Gemini synchronously, rotating through all API keys × all MODEL_CANDIDATES.
-
-    Strategy: try every (key, model) combination until one succeeds.
-    On 429 — mark that key as failed for this model, try next key with same model.
-    On 403 — key is invalid entirely, skip it for all models.
+    Call Gemini synchronously using the new google-genai SDK, rotating through
+    all API keys x all MODEL_CANDIDATES until one succeeds.
     NOTE: Always call via _call_model_async from async code.
     """
     manager = get_api_key_manager()
-    cfg = generation_config or GENERATION_CONFIG
-
-    # Collect all available keys upfront
     all_keys = manager.active_keys
     if not all_keys:
         logger.warning("No Google AI API keys configured - AI features disabled.")
         return None
 
-    for model_name in MODEL_CANDIDATES:
-        # Try every key for this model
-        for key in all_keys:
-            # Skip if this key is currently in cooldown
-            if manager.get_key() is None:
-                break  # all keys exhausted
+    cfg_dict = generation_config or GENERATION_CONFIG
+    gen_cfg = genai_types.GenerateContentConfig(
+        temperature=cfg_dict.get("temperature", 0.4),
+        top_p=cfg_dict.get("top_p", 0.9),
+        top_k=cfg_dict.get("top_k", 40),
+        max_output_tokens=cfg_dict.get("max_output_tokens", 1024),
+        safety_settings=SAFETY_SETTINGS,
+    )
 
+    for model_name in MODEL_CANDIDATES:
+        for key in all_keys:
             for attempt in range(2):
                 try:
-                    genai.configure(api_key=key)
-                    model = genai.GenerativeModel(
-                        model_name=model_name,
-                        safety_settings=SAFETY_SETTINGS,
-                        generation_config=cfg,
+                    client = genai.Client(api_key=key)
+                    response = client.models.generate_content(
+                        model=model_name,
+                        contents=prompt,
+                        config=gen_cfg,
                     )
-                    response = model.generate_content(prompt)
-                    if not response.candidates:
-                        logger.warning("Gemini (%s) returned no candidates.", model_name)
-                        break  # try next key
-
                     text = response.text or ""
                     text = re.sub(r"^```(?:json)?\s*", "", text.strip())
                     text = re.sub(r"\s*```$", "", text)
@@ -97,31 +102,29 @@ def _call_model(prompt: str, generation_config: dict | None = None) -> dict[str,
                     manager.mark_succeeded(key)
                     return result
 
-                except google_exceptions.ResourceExhausted as exc:
-                    logger.warning("Key %.12s... / Model %s rate-limited (429)", key, model_name)
-                    manager.mark_failed(key)
-                    break  # try next key for same model
-
-                except google_exceptions.PermissionDenied as exc:
-                    logger.warning("Key %.12s... rejected (403): %s", key, str(exc)[:80])
-                    manager.mark_failed(key)
-                    break  # try next key
-
-                except (json.JSONDecodeError, ValueError) as exc:
-                    logger.warning("Gemini (%s) non-JSON response: %s", model_name, exc)
-                    if attempt == 0:
-                        continue
-                    break
-
                 except Exception as exc:
-                    logger.warning("Gemini (%s) key %.12s... error: %s", model_name, key, str(exc)[:120])
-                    if attempt == 0:
-                        continue
-                    break
+                    err_str = str(exc).lower()
+                    if "429" in err_str or "quota" in err_str or "resource_exhausted" in err_str:
+                        logger.warning("Key %.12s... / Model %s rate-limited (429)", key, model_name)
+                        manager.mark_failed(key)
+                        break  # try next key
+                    elif "403" in err_str or "permission" in err_str or "api_key" in err_str:
+                        logger.warning("Key %.12s... rejected (403): %s", key, str(exc)[:80])
+                        manager.mark_failed(key)
+                        break  # try next key
+                    elif "json" in err_str or isinstance(exc, (json.JSONDecodeError, ValueError)):
+                        logger.warning("Gemini (%s) non-JSON response: %s", model_name, exc)
+                        if attempt == 0:
+                            continue
+                        break
+                    else:
+                        logger.warning("Gemini (%s) key %.12s... error: %s", model_name, key, str(exc)[:120])
+                        if attempt == 0:
+                            continue
+                        break
 
-    logger.error("All key × model combinations exhausted - no response.")
+    logger.error("All key x model combinations exhausted - no response.")
     return None
-
 
 async def _call_model_async(prompt: str, generation_config: dict | None = None) -> dict[str, Any] | None:
     """
@@ -842,10 +845,6 @@ Your tutor response here.
 ["suggestion 1", "suggestion 2", "suggestion 3"]
 </SUGGESTIONS>"""
 
-    result_raw = await _call_model_async(prompt)
-
-    # _call_model_async expects JSON but this prompt returns structured text.
-    # Use a raw text call instead.
     loop = asyncio.get_event_loop()
 
     def _call_chat():
@@ -854,62 +853,63 @@ Your tutor response here.
         if not all_keys:
             return None
 
-        chat_config = {
-            "temperature": 0.8,
-            "top_p": 0.95,
-            "top_k": 40,
-            "max_output_tokens": 2048,
-        }
+        chat_cfg = genai_types.GenerateContentConfig(
+            temperature=0.8,
+            top_p=0.95,
+            top_k=40,
+            max_output_tokens=2048,
+            safety_settings=SAFETY_SETTINGS,
+        )
 
         for model_name in MODEL_CANDIDATES:
             for key in all_keys:
                 for attempt in range(2):
                     try:
-                        genai.configure(api_key=key)
-                        model = genai.GenerativeModel(
-                            model_name=model_name,
-                            safety_settings=SAFETY_SETTINGS,
-                            generation_config=chat_config,
+                        client = genai.Client(api_key=key)
+                        response = client.models.generate_content(
+                            model=model_name,
+                            contents=prompt,
+                            config=chat_cfg,
                         )
-                        response = model.generate_content(prompt)
-                        if not response.candidates:
+                        if not response.text:
                             break
                         manager.mark_succeeded(key)
-                        return response.text or ""
-                    except google_exceptions.ResourceExhausted:
-                        manager.mark_failed(key)
-                        break
-                    except google_exceptions.PermissionDenied:
-                        manager.mark_failed(key)
-                        break
+                        return response.text
                     except Exception as exc:
-                        logger.warning("Chat error (%s): %s", model_name, str(exc)[:80])
-                        if attempt == 0:
-                            continue
-                        break
+                        err_str = str(exc).lower()
+                        if "429" in err_str or "quota" in err_str or "resource_exhausted" in err_str:
+                            manager.mark_failed(key)
+                            break
+                        elif "403" in err_str or "permission" in err_str:
+                            manager.mark_failed(key)
+                            break
+                        else:
+                            if attempt == 0:
+                                continue
+                            break
         return None
 
     raw_text = await loop.run_in_executor(None, _call_chat)
 
     if not raw_text:
+        logger.warning("chat_with_tutor: all keys/models exhausted for message: %s", message[:60])
         return {
-            "reply": "I'm sorry, the AI tutor is currently unavailable. Please try again in a moment.",
-            "follow_up_suggestions": [],
+            "reply": "The AI tutor is temporarily unavailable — all API keys have hit their quota. Please wait a few minutes and try again.",
+            "follow_up_suggestions": ["Try again in a few minutes"],
         }
 
     # Parse <REPLY> and <SUGGESTIONS> blocks
     reply = ""
     suggestions = []
 
-    import re as _re
-    reply_match = _re.search(r"<REPLY>(.*?)</REPLY>", raw_text, _re.DOTALL)
+    reply_match = re.search(r"<REPLY>(.*?)</REPLY>", raw_text, re.DOTALL)
     if reply_match:
         reply = reply_match.group(1).strip()
     else:
         # Fallback: treat entire response as reply
         reply = raw_text.strip()
 
-    suggestions_match = _re.search(r"<SUGGESTIONS>\s*(\[.*?\])\s*</SUGGESTIONS>", raw_text, _re.DOTALL)
+    suggestions_match = re.search(r"<SUGGESTIONS>\s*(\[.*?\])\s*</SUGGESTIONS>", raw_text, re.DOTALL)
     if suggestions_match:
         try:
             suggestions = json.loads(suggestions_match.group(1))
@@ -923,3 +923,14 @@ Your tutor response here.
         "reply": reply or "I couldn't formulate a response. Please try rephrasing your question.",
         "follow_up_suggestions": suggestions,
     }
+
+
+
+
+
+
+
+
+
+
+

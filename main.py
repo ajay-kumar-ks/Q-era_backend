@@ -63,6 +63,10 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 @app.on_event("startup")
 async def startup_event():
+    import logging as _log
+    _log.getLogger("startup").info(
+        "CORS allowed origins: %s", settings.ALLOWED_ORIGINS
+    )
     await init_db(app)
 
 @app.on_event("shutdown")

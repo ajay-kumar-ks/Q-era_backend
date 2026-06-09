@@ -1,7 +1,7 @@
 import os
 import threading
 import time
-from pydantic import Field, field_validator, ConfigDict
+from pydantic import Field, field_validator, ConfigDict, AliasChoices
 from pydantic_settings import BaseSettings
 
 
@@ -12,20 +12,20 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    SECRET_KEY: str = Field("changeme", env="SECRET_KEY")
-    DB_PATH: str = Field("database_files/qera.db", env="DB_PATH")
-    DATABASE_URL: str | None = Field(None, env="DATABASE_URL")
+    SECRET_KEY: str = Field("changeme", validation_alias=AliasChoices("SECRET_KEY", "secret_key"))
+    DB_PATH: str = Field("database_files/qera.db", validation_alias=AliasChoices("DB_PATH", "db_path"))
+    DATABASE_URL: str | None = Field(None, validation_alias=AliasChoices("DATABASE_URL", "database_url"))
     ALLOWED_ORIGINS_STR: str = Field(
         default="http://localhost:5173",
-        env="ALLOWED_ORIGINS"
+        validation_alias=AliasChoices("ALLOWED_ORIGINS", "allowed_origins"),
     )
-    DEBUG: bool = Field(True, env="DEBUG")
-    CLOUDINARY_URL: str | None = Field(None, env="CLOUDINARY_URL")
-    CLOUDINARY_CLOUD_NAME: str | None = Field(None, env="CLOUDINARY_CLOUD_NAME")
-    CLOUDINARY_API_KEY: str | None = Field(None, env="CLOUDINARY_API_KEY")
-    CLOUDINARY_API_SECRET: str | None = Field(None, env="CLOUDINARY_API_SECRET")
-    CLOUDINARY_UPLOAD_FOLDER: str | None = Field("questions", env="CLOUDINARY_UPLOAD_FOLDER")
-    GOOGLE_AI_STUDIO_API_KEYS: str = Field("", env="GOOGLE_AI_STUDIO_API_KEYS")
+    DEBUG: bool = Field(True, validation_alias=AliasChoices("DEBUG", "debug"))
+    CLOUDINARY_URL: str | None = Field(None, validation_alias=AliasChoices("CLOUDINARY_URL", "cloudinary_url"))
+    CLOUDINARY_CLOUD_NAME: str | None = Field(None, validation_alias=AliasChoices("CLOUDINARY_CLOUD_NAME", "cloudinary_cloud_name"))
+    CLOUDINARY_API_KEY: str | None = Field(None, validation_alias=AliasChoices("CLOUDINARY_API_KEY", "cloudinary_api_key"))
+    CLOUDINARY_API_SECRET: str | None = Field(None, validation_alias=AliasChoices("CLOUDINARY_API_SECRET", "cloudinary_api_secret"))
+    CLOUDINARY_UPLOAD_FOLDER: str | None = Field("questions", validation_alias=AliasChoices("CLOUDINARY_UPLOAD_FOLDER", "cloudinary_upload_folder"))
+    GOOGLE_AI_STUDIO_API_KEYS: str = Field("", validation_alias=AliasChoices("GOOGLE_AI_STUDIO_API_KEYS", "google_ai_studio_api_keys"))
 
     @field_validator("DEBUG", mode="before")
     @classmethod

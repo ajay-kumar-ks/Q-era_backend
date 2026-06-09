@@ -6,12 +6,14 @@ try:
     from backend.models.badge_model import get_user_badges
     from backend.models.notification_model import get_notifications_for_user, mark_notification_read, mark_all_notifications_read
     from backend.middlewares.auth import get_current_user
+    from backend.services import ai_service
 except ImportError:
     from schemas.user_schema import BadgeOut, UserProfileOut, UserUpdate
     from models import user_model
     from models.badge_model import get_user_badges
     from models.notification_model import get_notifications_for_user, mark_notification_read, mark_all_notifications_read
     from middlewares.auth import get_current_user
+    from services import ai_service
 
 router = APIRouter(prefix="/api/v1", tags=["users"])
 
@@ -37,6 +39,21 @@ async def read_user_profile(request: Request, user_id: int):
 @router.put("/users/me", response_model=UserProfileOut)
 async def update_my_profile(request: Request, payload: UserUpdate, current_user: dict = Depends(get_current_user)):
     db = request.app.state.db
+
+    # Moderate bio and display_name before saving (fail-open)
+    fields_to_moderate = {
+        "bio": payload.bio,
+        "display_name": payload.name,
+    }
+    for field_name, field_value in fields_to_moderate.items():
+        if field_value:
+            mod_result = await ai_service.moderation_filter(field_value)
+            if mod_result.get("is_toxic") or mod_result.get("is_spam"):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Profile {field_name} rejected by content moderation: {mod_result.get('reason', 'Policy violation')}",
+                )
+
     updated = await user_model.update_user(
         db,
         current_user["id"],

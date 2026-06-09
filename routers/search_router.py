@@ -70,7 +70,7 @@ async def search_questions(
     
     # Semantic fallback: if mode is semantic or keyword returns < 3 results
     if mode == "semantic" or (result["total"] < 3 and mode == "keyword"):
-        semantic_results = await semantic_search(q)
+        semantic_results = await semantic_search(db, q)
         if semantic_results:
             result["results"] = semantic_results
             result["search_mode"] = "semantic"

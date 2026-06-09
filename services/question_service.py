@@ -30,6 +30,15 @@ async def create_question(
     tags = tags or []
     options = options or []
 
+    # Moderate question title and description before any processing
+    text_to_moderate = f"{title} {description or ''}".strip()
+    mod_result = await ai_service.moderation_filter(text_to_moderate)
+    if mod_result.get("is_toxic") or mod_result.get("is_spam"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Question rejected by content moderation: {mod_result.get('reason', 'Policy violation')}",
+        )
+
     duplicate_result = await ai_service.check_duplicate(db, title, description)
     if not tags:
         tags = await ai_service.suggest_tags(db, title, description)
@@ -138,6 +147,14 @@ async def toggle_bookmark(db, user_id: int, question_id: int) -> dict[str, Any]:
 
 
 async def create_comment(db, question_id: int, user_id: int, content: str, parent_id: int | None = None) -> dict[str, Any]:
+    # Moderate comment content before saving (fail-open: on AI error, allow through)
+    mod_result = await ai_service.moderation_filter(content)
+    if mod_result.get("is_toxic") or mod_result.get("is_spam"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Comment rejected by content moderation: {mod_result.get('reason', 'Policy violation')}",
+        )
+
     comment = await comment_model.create_comment(db, question_id, user_id, content, parent_id)
     if parent_id is not None:
         cursor = await db.execute("SELECT user_id FROM comments WHERE id = ?", (parent_id,))

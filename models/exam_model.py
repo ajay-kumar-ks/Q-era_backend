@@ -170,6 +170,17 @@ async def create_exam(
     exam_id = cursor.lastrowid
     await db.commit()
 
+    # Re-SELECT on Postgres in case lastrowid is None (LASTVAL failure)
+    if not exam_id:
+        cursor2 = await db.execute(
+            "SELECT id FROM exams WHERE user_id = ? AND title = ? ORDER BY created_at DESC LIMIT 1",
+            (user_id, title),
+        )
+        row2 = await cursor2.fetchone()
+        if row2 is None:
+            raise RuntimeError("Failed to retrieve exam ID after INSERT")
+        exam_id = row2[0]
+
     if requires_approval:
         try:
             await db.execute(

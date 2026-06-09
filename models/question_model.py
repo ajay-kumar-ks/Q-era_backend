@@ -54,9 +54,12 @@ async def _get_or_create_tag_id(db, name: str) -> int:
     row = await cursor.fetchone()
     if row:
         return row[0]
-    cursor = await db.execute("INSERT INTO tags (name) VALUES (?)", (name,))
+    await db.execute("INSERT INTO tags (name) VALUES (?)", (name,))
     await db.commit()
-    return cursor.lastrowid
+    # Re-select after insert — works on both SQLite and PostgreSQL
+    cursor = await db.execute("SELECT id FROM tags WHERE name = ?", (name,))
+    row = await cursor.fetchone()
+    return row[0]
 
 
 async def create_question(
@@ -127,6 +130,22 @@ async def create_question(
         )
     question_id = cursor.lastrowid
     await db.commit()
+
+    # On PostgreSQL, lastrowid can be None if LASTVAL() failed (e.g. after
+    # ON CONFLICT DO NOTHING). Re-SELECT to get the real ID reliably.
+    if not question_id:
+        cursor2 = await db.execute(
+            "SELECT id FROM questions WHERE user_id = ? AND title = ? ORDER BY created_at DESC LIMIT 1",
+            (user_id, title),
+        )
+        row2 = await cursor2.fetchone()
+        if row2 is None:
+            raise RuntimeError("Failed to retrieve question ID after INSERT")
+        question_id = row2[0]
+
+    # Defensive guard — should never happen but prevents silent null FK violations
+    if not question_id:
+        raise RuntimeError(f"question_id is None after INSERT for title='{title}'")
 
     # Try to insert a pending_approvals row if required; ignore failures if
     # the migrations haven't been applied yet.

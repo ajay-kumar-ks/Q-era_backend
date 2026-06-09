@@ -1,0 +1,11 @@
+[33m6ff86c6[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m)[m Remove .env from repository
+[33m4f23a38[m ai till phase 2.3
+[33m985ba98[m[33m ([m[1;31morigin/main[m[33m)[m stable 1
+[33mb85cd38[m n
+[33m196cc50[m bug fix
+[33ma1dafad[m bug fiix
+[33m6fc63ad[m some
+[33mf2a5a87[m structure changes
+[33m47fa65a[m backend connected to hosted db
+[33m9e3337f[m local backend connected to deployed frontend
+[33m621af94[m Initial commit

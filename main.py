@@ -18,6 +18,7 @@ try:
     from backend.routers.search_router import router as search_router
     from backend.routers.review_router import router as review_router
     from backend.routers.import_export_router import router as import_export_router
+    from backend.routers.ai_router import router as ai_router
 except ImportError:
     from config import settings
     from database import init_db, close_db
@@ -34,6 +35,7 @@ except ImportError:
     from routers.search_router import router as search_router
     from routers.review_router import router as review_router
     from routers.import_export_router import router as import_export_router
+    from routers.ai_router import router as ai_router
 
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
@@ -79,3 +81,4 @@ app.include_router(admin_router)
 app.include_router(search_router)
 app.include_router(review_router)
 app.include_router(import_export_router)
+app.include_router(ai_router)

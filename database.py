@@ -92,6 +92,7 @@ SERIAL_PK_TABLES = {
     "notifications",
     "badges",
     "pending_approvals",
+    "tags",
 }
 
 
@@ -153,15 +154,22 @@ class PostgresDatabase:
             records = await self._conn.fetch(sql, *params)
             return PostgresCursor(records)
 
-        await self._conn.execute(sql, *params)
-        lastrowid = None
         insert_table = _extract_insert_table(sql)
-        if insert_table in SERIAL_PK_TABLES:
+        if insert_table in SERIAL_PK_TABLES and re.match(r"^\s*INSERT\b", sql, flags=re.I):
+            # Use RETURNING id so the ID is returned in the same round-trip
+            # and is not affected by ON CONFLICT DO NOTHING no-ops.
+            returning_sql = sql.rstrip().rstrip(";")
+            if "RETURNING" not in returning_sql.upper():
+                returning_sql += " RETURNING id"
             try:
-                lastrowid = await self._conn.fetchval("SELECT LASTVAL()")
+                lastrowid = await self._conn.fetchval(returning_sql, *params)
             except Exception:
+                await self._conn.execute(sql, *params)
                 lastrowid = None
-        return PostgresCursor([], lastrowid=lastrowid)
+            return PostgresCursor([], lastrowid=lastrowid)
+
+        await self._conn.execute(sql, *params)
+        return PostgresCursor([], lastrowid=None)
 
     async def executemany(self, sql: str, seq_of_params):
         sql = _translate_postgres_sql(sql)
@@ -195,15 +203,22 @@ class PostgresPoolDatabase:
                 records = await conn.fetch(sql, *params)
                 return PostgresCursor(records)
 
-            await conn.execute(sql, *params)
-            lastrowid = None
             insert_table = _extract_insert_table(sql)
-            if insert_table in SERIAL_PK_TABLES:
+            if insert_table in SERIAL_PK_TABLES and re.match(r"^\s*INSERT\b", sql, flags=re.I):
+                # Use RETURNING id — reliable even with connection pools and
+                # ON CONFLICT DO NOTHING (returns None for no-ops, not wrong IDs).
+                returning_sql = sql.rstrip().rstrip(";")
+                if "RETURNING" not in returning_sql.upper():
+                    returning_sql += " RETURNING id"
                 try:
-                    lastrowid = await conn.fetchval("SELECT LASTVAL()")
+                    lastrowid = await conn.fetchval(returning_sql, *params)
                 except Exception:
+                    await conn.execute(sql, *params)
                     lastrowid = None
-            return PostgresCursor([], lastrowid=lastrowid)
+                return PostgresCursor([], lastrowid=lastrowid)
+
+            await conn.execute(sql, *params)
+            return PostgresCursor([], lastrowid=None)
 
     async def executemany(self, sql: str, seq_of_params):
         sql = _translate_postgres_sql(sql)

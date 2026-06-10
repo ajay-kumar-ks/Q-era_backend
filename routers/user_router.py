@@ -79,15 +79,15 @@ async def read_my_bookmarks(request: Request, current_user: dict = Depends(get_c
 
 
 @router.get("/users/me/questions")
-async def read_my_questions(request: Request, current_user: dict = Depends(get_current_user)):
+async def read_my_questions(request: Request, page: int = 1, limit: int = 10, current_user: dict = Depends(get_current_user)):
     db = request.app.state.db
-    return await user_model.get_user_questions(db, current_user["id"])
+    return await user_model.get_user_questions(db, current_user["id"], page=page, limit=limit)
 
 
 @router.get("/users/me/exams")
-async def read_my_exams(request: Request, current_user: dict = Depends(get_current_user)):
+async def read_my_exams(request: Request, page: int = 1, limit: int = 10, current_user: dict = Depends(get_current_user)):
     db = request.app.state.db
-    return await user_model.get_user_exams(db, current_user["id"])
+    return await user_model.get_user_exams(db, current_user["id"], page=page, limit=limit)
 
 
 @router.get("/users/me/progress")

@@ -154,49 +154,60 @@ async def check_duplicate(db, title: str, description: str | None) -> dict[str, 
     if db is not None:
         try:
             cursor = await db.execute(
-                "SELECT id, title FROM questions WHERE is_flagged = 0 ORDER BY created_at DESC LIMIT 200"
+                """SELECT id, title,
+                   CASE WHEN description IS NOT NULL THEN SUBSTR(description, 1, 120) ELSE NULL END
+                   FROM questions WHERE is_flagged = 0 ORDER BY created_at DESC LIMIT 200"""
             )
             existing_rows = await cursor.fetchall()
             if existing_rows:
-                lines = [f"[{r[0]}] {r[1]}" for r in existing_rows]
+                lines = []
+                for r in existing_rows:
+                    desc_snippet = f" | code: {r[2][:60]}…" if r[2] else ""
+                    lines.append(f"[{r[0]}] {r[1]}{desc_snippet}")
                 existing_titles_text = "\n".join(lines)
         except Exception as exc:
             logger.warning("Could not fetch existing questions for duplicate check: %s", exc)
 
     if existing_titles_text:
         prompt = f"""You are a duplicate-detection assistant for a Q&A platform.
-Analyze the new question below and decide if any existing question is semantically similar
-(same meaning, just rephrased â€” not just identical wording).
+Decide if the NEW question is a true duplicate of any EXISTING question.
+
+CRITICAL RULES:
+- Two questions that ask about different code snippets are NOT duplicates,
+  even if they share the same title pattern like "What is the output of...".
+- Only mark as duplicate if the CONTENT (including any code) is substantially identical.
+- Generic title similarity alone is NOT sufficient evidence of duplication.
 
 New question:
   Title: {title}
-  Description: {description or 'N/A'}
+  Description/code: {description or 'N/A'}
 
-Existing questions (format: [id] title):
+Existing questions (format: [id] title | code snippet if any):
 {existing_titles_text}
 
 Return JSON with exactly these keys:
-- is_duplicate (boolean): true if a semantically similar question exists
-- similar_ids (array of ints): IDs of similar existing questions (max 3, empty if none)
-- confidence (float 0.0-1.0): your confidence in the assessment
-- reason (string): brief explanation if duplicate, otherwise empty string
+- is_duplicate (boolean): true ONLY if content including any code is substantially identical
+- similar_ids (array of ints): IDs of truly matching questions (max 3, empty if none)
+- confidence (float 0.0-1.0): your confidence
+- reason (string): brief explanation, or empty string
 
 Output ONLY valid JSON, no markdown, no extra text."""
     else:
         prompt = f"""You are a duplicate-detection assistant for a Q&A platform.
-Analyze the following question and decide whether it is likely a duplicate.
+Analyze the following question and decide whether it is a duplicate.
+
+IMPORTANT: Questions with the same title pattern but different code snippets are NOT duplicates.
 
 Title: {title}
-Description: {description or 'N/A'}
+Description/code: {description or 'N/A'}
 
 Return JSON with exactly these keys:
-- is_duplicate (boolean): true if likely duplicate, false otherwise
+- is_duplicate (boolean): true only if this exact question (including code) already exists
 - similar_ids (array of ints): empty array
-- confidence (float 0.0-1.0): your confidence in the assessment
+- confidence (float 0.0-1.0): your confidence
 - reason (string): short explanation if duplicate, otherwise empty string
 
 Output ONLY valid JSON, no markdown, no extra text."""
-
     result = await _call_model_async(prompt)
     if result is not None and "is_duplicate" in result:
         return {
@@ -923,6 +934,7 @@ Your tutor response here.
         "reply": reply or "I couldn't formulate a response. Please try rephrasing your question.",
         "follow_up_suggestions": suggestions,
     }
+
 
 
 

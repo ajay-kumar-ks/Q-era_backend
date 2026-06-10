@@ -241,55 +241,79 @@ async def get_user_bookmarks(db, user_id: int) -> list[dict]:
     ]
 
 
-async def get_user_questions(db, user_id: int) -> list[dict]:
+async def get_user_questions(db, user_id: int, page: int = 1, limit: int = 10) -> dict:
+    offset = (page - 1) * limit
+    # Total count
+    count_cursor = await db.execute(
+        "SELECT COUNT(*) FROM questions WHERE user_id = ?", (user_id,)
+    )
+    count_row = await count_cursor.fetchone()
+    total = count_row[0] if count_row else 0
+
     cursor = await db.execute(
         """
-        SELECT q.id, q.title, q.difficulty, q.created_at,
+        SELECT q.id, q.title, q.description, q.type, q.difficulty, q.is_public, q.created_at,
                CASE WHEN q.requires_approval = 0 THEN 'approved' ELSE COALESCE(pa.status, 'pending') END AS status
         FROM questions q
         LEFT JOIN pending_approvals pa ON pa.content_type = 'question' AND pa.content_id = q.id
         WHERE q.user_id = ?
         ORDER BY q.created_at DESC
+        LIMIT ? OFFSET ?
         """,
-        (user_id,),
+        (user_id, limit, offset),
     )
     rows = await cursor.fetchall()
-    return [
+    items = [
         {
             "id": row[0],
             "title": row[1],
-            "difficulty": row[2],
-            "created_at": row[3],
-            "status": row[4],
+            "description": row[2],
+            "type": row[3],
+            "difficulty": row[4],
+            "is_public": bool(row[5]),
+            "created_at": str(row[6]),
+            "status": row[7],
         }
         for row in rows
     ]
+    return {"items": items, "total": total, "page": page, "limit": limit}
 
 
-async def get_user_exams(db, user_id: int) -> list[dict]:
+async def get_user_exams(db, user_id: int, page: int = 1, limit: int = 10) -> dict:
+    offset = (page - 1) * limit
+    count_cursor = await db.execute(
+        "SELECT COUNT(*) FROM exams WHERE user_id = ?", (user_id,)
+    )
+    count_row = await count_cursor.fetchone()
+    total = count_row[0] if count_row else 0
+
     cursor = await db.execute(
         """
-        SELECT e.id, e.title, e.duration_minutes, e.total_marks, e.created_at,
+        SELECT e.id, e.title, e.description, e.duration_minutes, e.total_marks, e.is_public, e.created_at,
                CASE WHEN e.requires_approval = 0 THEN 'approved' ELSE COALESCE(pa.status, 'pending') END AS status
         FROM exams e
         LEFT JOIN pending_approvals pa ON pa.content_type = 'exam' AND pa.content_id = e.id
         WHERE e.user_id = ?
         ORDER BY e.created_at DESC
+        LIMIT ? OFFSET ?
         """,
-        (user_id,),
+        (user_id, limit, offset),
     )
     rows = await cursor.fetchall()
-    return [
+    items = [
         {
             "id": row[0],
             "title": row[1],
-            "duration_minutes": row[2],
-            "total_marks": row[3],
-            "created_at": row[4],
-            "status": row[5],
+            "description": row[2],
+            "duration_minutes": row[3],
+            "total_marks": row[4],
+            "is_public": bool(row[5]),
+            "created_at": str(row[6]),
+            "status": row[7],
         }
         for row in rows
     ]
+    return {"items": items, "total": total, "page": page, "limit": limit}
 
 
 def _parse_json_object(value: str | None) -> dict:
